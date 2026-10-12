@@ -1,7 +1,7 @@
 version: "3.8"
 
 # free5GC PCC-rule leak FIX-VERIFICATION environment (issues #1181 / #1184 / #1185).
-# Identical to docker-compose.yaml except for the PCF image: free5gc/pcf:v4.3.0-pccfix,
+# Identical to docker-compose.yaml except for the PCF image: free5gc-pcf:v4.3.0-pccfix,
 # built locally from ../pkgs/pcf with ../Dockerfile. That snapshot is pristine free5gc/pcf
 # v1.4.6 (eb57557) - the same NF revision the stock free5gc/pcf:v4.3.0 image is built from -
 # so the two containers differ only by pkgs/fix.patch and the A/B comparison is matched.
@@ -11,7 +11,7 @@ version: "3.8"
 # PolicyCtrlReqTriggers and restores the id generators, so a 403 leaves the decision
 # exactly as it found it. Pinned with pull_policy: never so it is never looked up on
 # Docker Hub. Build with:
-#     cd .. && docker build -f Dockerfile -t free5gc/pcf:v4.3.0-pccfix .
+#     cd .. && docker build -f Dockerfile -t free5gc-pcf:v4.3.0-pccfix .
 #
 # Used two ways:
 #   1. standalone fixed stack (only when no other free5gc stack is up):
@@ -146,7 +146,7 @@ services:
 
   free5gc-pcf:
     container_name: pcf
-    image: free5gc/pcf:v4.3.0-pccfix
+    image: free5gc-pcf:v4.3.0-pccfix
     pull_policy: never
     command: ./pcf -c ./config/pcfcfg.yaml
     expose:
