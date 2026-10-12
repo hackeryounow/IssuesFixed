@@ -1,0 +1,3 @@
+# Local-only working directories, not for upload
+pccissues/
+.verify/
