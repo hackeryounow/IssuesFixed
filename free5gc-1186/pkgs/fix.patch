@@ -1,0 +1,43 @@
+diff --git a/internal/sbi/processor/pdu_session.go b/internal/sbi/processor/pdu_session.go
+index f61559b..b8f1571 100644
+--- a/internal/sbi/processor/pdu_session.go
++++ b/internal/sbi/processor/pdu_session.go
+@@ -1434,12 +1434,18 @@ func (p *Processor) HandlePDUSessionSMContextLocalRelease(
+ 
+ 	case smf_context.SessionReleaseFailed:
+ 		logger.CtxLog.Traceln("In case SessionReleaseFailed")
+-		smContext.SetState(smf_context.Active)
++		// The duplicate-key branch of the create handler overwrites the (SUPI,
++		// pduSessionId) key as soon as this handler returns, so this context can
++		// never be released again: close its charging session and remove it like
++		// the success branch does, even though the PFCP release failed.
++		p.ReleaseChargingSession(smContext)
++		p.RemoveSMContextFromAllNF(smContext, false)
+ 
+ 	default:
+ 		smContext.Log.Warnf("The state shouldn't be [%s]", pfcpResponseStatus)
+ 		logger.CtxLog.Traceln("In case Unknown")
+-		smContext.SetState(smf_context.Active)
++		p.ReleaseChargingSession(smContext)
++		p.RemoveSMContextFromAllNF(smContext, false)
+ 	}
+ }
+ 
+diff --git a/internal/sbi/processor/sm_common.go b/internal/sbi/processor/sm_common.go
+index e0bd68e..8badf17 100644
+--- a/internal/sbi/processor/sm_common.go
++++ b/internal/sbi/processor/sm_common.go
+@@ -7,6 +7,13 @@ import (
+ func (p *Processor) RemoveSMContextFromAllNF(smContext *smf_context.SMContext, sendNotification bool) {
+ 	smContext.SetState(smf_context.InActive)
+ 
++	// Release any charging session the caller has not closed yet, so no removal
++	// path can strand an open CDR on the CHF; ReleaseChargingSession is one-shot
++	// (BeginChargingRelease), so this stays idempotent with the success branches.
++	if smContext.ChargingDataRef != "" {
++		p.ReleaseChargingSession(smContext)
++	}
++
+ 	// Notify BSF about PCF binding release if we have a binding ID
+ 	if smContext.BSFBindingID != "" {
+ 		p.Consumer().NotifyBSFBindingRelease(smContext)

@@ -1,0 +1,20 @@
+[
+ {
+  "first_seen": "2026-10-12",
+  "pid": 5,
+  "ref": "urn:uuid:001697a4-60f1-47e4-801b-575ca691dcd4",
+  "supi": "imsi-208930000000001"
+ },
+ {
+  "first_seen": "2026-10-12",
+  "pid": 6,
+  "ref": "urn:uuid:bcee25b3-bffb-4e24-accb-1e1f136997b3",
+  "supi": "imsi-208930000000001"
+ },
+ {
+  "first_seen": "2026-10-12",
+  "pid": 7,
+  "ref": "urn:uuid:ecf285ec-3029-43d1-9dc5-a981272802f3",
+  "supi": "imsi-208930000000001"
+ }
+]

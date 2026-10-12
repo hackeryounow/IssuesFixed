@@ -1,0 +1,347 @@
+version: "3.8"
+
+# free5GC SMF charging-session leak FIX-VERIFICATION environment (issue #1186).
+# Identical to docker-compose.yaml except for the SMF image: free5gc-smf:1c9d766-1186,
+# built locally from ../pkgs/smf with ../Dockerfile. That snapshot is pristine
+# free5gc/smf @ 1c9d7662 - the same NF revision the stock free5gc/smf:v4.3.0 image is
+# built from (its embedded build info reports COMMIT_HASH=1c9d7662) - so the vulnerable
+# and the fixed containers differ only by pkgs/fix.patch and the A/B comparison is
+# matched. The fix makes the failed/default branches of
+# HandlePDUSessionSMContextLocalRelease release the charging session and remove the SM
+# context exactly like the success branch does (their caller overwrites the
+# (SUPI, pduSessionId) key right after, so no other path could ever reach the context
+# again), and adds a guard at the top of RemoveSMContextFromAllNF so no removal path
+# strands an open CDR on the CHF; the upstream one-shot BeginChargingRelease guard
+# keeps the two fixes mutually idempotent. Pinned with pull_policy: never so it is
+# never looked up on Docker Hub. Build with:
+#     cd .. && docker build -f Dockerfile -t free5gc-smf:1c9d766-1186 .
+#
+# Used two ways:
+#   1. standalone fixed stack (only when no other free5gc stack is up):
+#        docker compose -f docker-compose-fixed.yaml up -d
+#   2. swap ONLY the SMF inside the already-running free5gc-v430 project, leaving every
+#      other NF untouched (this is what the bundle's verification does) - layer this
+#      same file as the second -f with the BUNDLE's own docker-compose.yaml first:
+#        docker compose -p free5gc-v430 \
+#          -f /root/5gc/IssueFix/free5gc-1186/deployments/docker-compose.yaml \
+#          -f /root/5gc/IssueFix/free5gc-1186/deployments/docker-compose-fixed.yaml \
+#          up -d --no-deps --force-recreate free5gc-smf
+#      The bundle file MUST come first: compose resolves each service's relative mount
+#      paths against the file that defines the winning entry, and the 5gc-deployments
+#      tree this stack was originally started from no longer ships its config/cert
+#      files - recreating from that file first would make the daemon auto-create the
+#      missing sources as directories and fail with "not a directory". The bundle's
+#      config/cert trees are unmodified copies of that stack's originals, so mounting
+#      them changes nothing content-wise. Verified with `docker compose config`: the
+#      merged free5gc-smf service keeps the stack's static IP/aliases/command and only
+#      gains the image and pull_policy. Revert with the same command minus the second
+#      -f. Both swaps restart the SMF, which wipes its in-memory SM context pool:
+#      zombies from earlier vulnerable runs vanish from the pool (their already-stranded
+#      CDRs stay open on the CHF), and a UE with live sessions must re-attach afterwards.
+#
+# Start : docker compose -f docker-compose-fixed.yaml up -d
+# gNB   : runs automatically (ueransim service, ./nr-gnb -c ./config/gnbcfg.yaml)
+# UE    : docker exec -it ueransim bash -c "./nr-ue -c ./config/uecfg.yaml"
+
+services:
+  free5gc-upf:
+    container_name: upf
+    image: free5gc/upf:v4.3.0
+    command: bash -c "./upf-iptables.sh && ./upf -c ./config/upfcfg.yaml"
+    volumes:
+      - ./config/upfcfg.yaml:/free5gc/config/upfcfg.yaml
+      - ./config/upf-iptables.sh:/free5gc/upf-iptables.sh
+    cap_add:
+      - NET_ADMIN
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.3
+        aliases:
+          - upf.free5gc.org
+
+  db:
+    container_name: mongodb
+    image: mongo:3.6.8
+    command: mongod --port 27017
+    expose:
+      - "27017"
+    volumes:
+      - dbdata:/data/db
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.20
+        aliases:
+          - db
+
+  free5gc-nrf:
+    container_name: nrf
+    image: free5gc/nrf:v4.3.0
+    command: ./nrf -c ./config/nrfcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/nrfcfg.yaml:/free5gc/config/nrfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      DB_URI: mongodb://db/free5gc
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.4
+        aliases:
+          - nrf.free5gc.org
+    depends_on:
+      - db
+
+  free5gc-amf:
+    container_name: amf
+    image: free5gc/amf:v4.3.0
+    command: ./amf -c ./config/amfcfg.yaml
+    expose:
+      - "8000"
+    ports:
+      - 38412:38412/sctp
+    volumes:
+      - ./config/amfcfg.yaml:/free5gc/config/amfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.16
+        aliases:
+          - amf.free5gc.org
+    depends_on:
+      - free5gc-nrf
+
+  free5gc-ausf:
+    container_name: ausf
+    image: free5gc/ausf:v4.3.0
+    command: ./ausf -c ./config/ausfcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/ausfcfg.yaml:/free5gc/config/ausfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.9
+        aliases:
+          - ausf.free5gc.org
+    depends_on:
+      - free5gc-nrf
+
+  free5gc-nssf:
+    container_name: nssf
+    image: free5gc/nssf:v4.3.0
+    command: ./nssf -c ./config/nssfcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/nssfcfg.yaml:/free5gc/config/nssfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.6
+        aliases:
+          - nssf.free5gc.org
+    depends_on:
+      - free5gc-nrf
+
+  free5gc-pcf:
+    container_name: pcf
+    image: free5gc/pcf:v4.3.0
+    command: ./pcf -c ./config/pcfcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/pcfcfg.yaml:/free5gc/config/pcfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.7
+        aliases:
+          - pcf.free5gc.org
+    depends_on:
+      - free5gc-nrf
+
+  free5gc-smf:
+    container_name: smf
+    image: free5gc-smf:1c9d766-1186
+    pull_policy: never
+    command: ./smf -c ./config/smfcfg.yaml -u ./config/uerouting.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/smfcfg.yaml:/free5gc/config/smfcfg.yaml
+      - ./config/uerouting.yaml:/free5gc/config/uerouting.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.5
+        aliases:
+          - smf.free5gc.org
+    depends_on:
+      - free5gc-nrf
+      - free5gc-upf
+
+  free5gc-udm:
+    container_name: udm
+    image: free5gc/udm:v4.3.0
+    command: ./udm -c ./config/udmcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/udmcfg.yaml:/free5gc/config/udmcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.12
+        aliases:
+          - udm.free5gc.org
+    depends_on:
+      - db
+      - free5gc-nrf
+
+  free5gc-udr:
+    container_name: udr
+    image: free5gc/udr:v4.3.0
+    command: ./udr -c ./config/udrcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/udrcfg.yaml:/free5gc/config/udrcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      DB_URI: mongodb://db/free5gc
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.11
+        aliases:
+          - udr.free5gc.org
+    depends_on:
+      - db
+      - free5gc-nrf
+
+  free5gc-chf:
+    container_name: chf
+    image: free5gc/chf:v4.3.0
+    command: ./chf -c ./config/chfcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/chfcfg.yaml:/free5gc/config/chfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      DB_URI: mongodb://db/free5gc
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.14
+        aliases:
+          - chf.free5gc.org
+    depends_on:
+      - db
+      - free5gc-nrf
+      - free5gc-webui
+
+  free5gc-tngf:
+    container_name: tngf
+    image: free5gc/tngf:latest
+    command: ./tngf -c ./config/tngfcfg.yaml
+    volumes:
+      - ./config/tngfcfg.yaml:/free5gc/config/tngfcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    cap_add:
+      - NET_ADMIN
+    network_mode: host
+    depends_on:
+      - free5gc-amf
+      - free5gc-smf
+      - free5gc-upf
+
+  free5gc-nef:
+    container_name: nef
+    image: free5gc/nef:latest
+    command: ./nef -c ./config/nefcfg.yaml
+    expose:
+      - "8000"
+    volumes:
+      - ./config/nefcfg.yaml:/free5gc/config/nefcfg.yaml
+      - ./cert:/free5gc/cert
+    environment:
+      GIN_MODE: release
+    networks:
+      privnet:
+        ipv4_address: 10.100.200.8
+        aliases:
+          - nef.free5gc.org
+    depends_on:
+      - db
+      - free5gc-nrf
+
+  free5gc-webui:
+    container_name: webui
+    image: free5gc/webui:v4.3.0
+    command: ./webui -c ./config/webuicfg.yaml
+    expose:
+      - "2121"
+    volumes:
+      - ./config/webuicfg.yaml:/free5gc/config/webuicfg.yaml
+    environment:
+      - GIN_MODE=release
+    networks:
+      privnet:
+        aliases:
+          - webui
+    ports:
+      - "5000:5000"
+      - "2122:2122"
+      - "2121:2121"
+    depends_on:
+      - db
+      - free5gc-nrf
+
+  ueransim:
+    container_name: ueransim
+    image: free5gc/ueransim:latest
+    command: ./nr-gnb -c ./config/gnbcfg.yaml
+    volumes:
+      - ./config/gnbcfg.yaml:/ueransim/config/gnbcfg.yaml
+      - ./config/uecfg.yaml:/ueransim/config/uecfg.yaml
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun"
+    networks:
+      privnet:
+        aliases:
+          - gnb.free5gc.org
+    depends_on:
+      - free5gc-amf
+      - free5gc-upf
+
+networks:
+  privnet:
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.100.200.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-free5gc
+
+volumes:
+  dbdata:
